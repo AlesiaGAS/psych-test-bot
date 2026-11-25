@@ -11,6 +11,7 @@ class Config:
     admin_ids: list[int]
     database_url: str
     port: int
+    gemini_api_key: str | None
 
 
 def load_config() -> Config:
@@ -28,10 +29,12 @@ def load_config() -> Config:
         raise ValueError("Не задан DATABASE_URL в переменных окружения")
 
     port = int(os.getenv("PORT", "8080"))
+    gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip() or None
 
     return Config(
         bot_token=token,
         admin_ids=admin_ids,
         database_url=database_url,
         port=port,
+        gemini_api_key=gemini_api_key,
     )
