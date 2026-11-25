@@ -6,10 +6,17 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash:generateContent"
-)
+MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.5-flash-lite",
+]
+
+TEST_NAMES_RU = {
+    "MBTI": "MBTI (тип личности)",
+    "DISC": "DISC (поведенческий профиль)",
+    "LEADERSHIP": "Управленческий потенциал (SJT-кейсы)",
+}
 
 
 def _format_ai_html(text: str) -> str:
@@ -62,26 +69,28 @@ async def _call_gemini(api_key: str, prompt: str) -> str | None:
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.4,
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": 4096,
         },
     }
-    timeout = aiohttp.ClientTimeout(total=45)
+    timeout = aiohttp.ClientTimeout(total=60)
 
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{GEMINI_URL}?key={api_key}",
-                json=payload,
-            ) as resp:
-                if resp.status != 200:
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for model in MODELS:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model}:generateContent?key={api_key}"
+            )
+            try:
+                async with session.post(url, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["candidates"][0]["content"]["parts"][0]["text"]
                     err = await resp.text()
-                    logger.error("Gemini API error %s: %s", resp.status, err)
-                    return None
-                data = await resp.json()
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        logger.error("Ошибка запроса к Gemini API: %s", e)
-        return None
+                    logger.error("Gemini %s error %s: %s", model, resp.status, err)
+            except Exception as e:
+                logger.error("Ошибка запроса к Gemini (%s): %s", model, e)
+
+    return None
 
 
 async def generate_mbti_ai_portrait(
@@ -198,22 +207,42 @@ async def generate_dossier_ai_summary(
     if not api_key or not records:
         return None
 
+    passed_types = [rec["test_type"] for rec in records]
+    missing_types = [
+        TEST_NAMES_RU[t] for t in ("MBTI", "DISC", "LEADERSHIP") if t not in passed_types
+    ]
+
     summary_blocks = []
     for rec in records:
+        name_ru = TEST_NAMES_RU.get(rec["test_type"], rec["test_type"])
         summary_blocks.append(
-            f"Тест {rec['test_type']}: итог {rec['result_code']}\n"
+            f"Тест «{name_ru}»: итог {rec['result_code']}\n"
             f"Детали шкал: {json.dumps(rec['scales_json'], ensure_ascii=False)}"
+        )
+
+    if len(records) == 1:
+        point_2 = "**2. Ключевые особенности шкал** (глубокий разбор цифр и пограничных значений)"
+    else:
+        point_2 = "**2. Синергия и противоречия между пройденными тестами**"
+
+    missing_note = ""
+    if missing_types:
+        missing_note = (
+            f"\n\nПримечание: кандидат пока НЕ проходил тесты: {', '.join(missing_types)}. "
+            f"Строй анализ строго на имеющихся данных, ничего не додумывай за непройденные тесты, "
+            f"а в конце добавь 1–2 предложения, что именно поможет уточнить прохождение оставшихся тестов."
         )
 
     prompt = (
         f"Ты — опытный HRD и организационный психолог. "
-        f"Перед тобой сводное досье кандидата {full_name} по всем пройденным тестам:\n\n"
-        f"{chr(10).join(summary_blocks)}\n\n"
-        f"Синтезируй единый, целостный портрет кандидата на русском языке (до 2800 символов). "
-        f"Найди пересечения, усиления и внутренние конфликты между разными тестами.\n"
+        f"Перед тобой досье кандидата {full_name} на основе имеющихся результатов "
+        f"(пройдено тестов: {len(records)} из 3):\n\n"
+        f"{chr(10).join(summary_blocks)}"
+        f"{missing_note}\n\n"
+        f"Сформируй целостный и практичный портрет кандидата на русском языке (до 2800 символов).\n"
         f"Структура (используй **жирный** для заголовков, без символов #):\n"
         f"**1. Итоговый профиль кандидата** (кто этот человек в работе)\n"
-        f"**2. Синергия и противоречия между тестами**\n"
+        f"{point_2}\n"
         f"**3. Идеальная роль и масштаб задач** (где даст максимум результата)\n"
         f"**4. Главные риски найма / повышения**\n"
         f"**5. Ключ к управлению** (как ставить задачи, мотивировать и давать обратную связь)"
