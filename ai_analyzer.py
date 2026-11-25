@@ -1,4 +1,3 @@
-import asyncio
 import html
 import json
 import logging
@@ -9,7 +8,6 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 GEMINI_MODELS = [
-    "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-flash-latest",
 ]
@@ -69,35 +67,6 @@ def _build_leadership_answers_log(questions: list[dict], answers: list[dict]) ->
     return "\n".join(lines)
 
 
-async def _call_gemini(api_key: str, prompt: str) -> str | None:
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": 4096,
-        },
-    }
-    timeout = aiohttp.ClientTimeout(total=45)
-
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        for model in GEMINI_MODELS:
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:generateContent?key={api_key}"
-            )
-            try:
-                async with session.post(url, json=payload) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data["candidates"][0]["content"]["parts"][0]["text"]
-                    err = await resp.text()
-                    logger.error("Gemini %s error %s: %s", model, resp.status, err)
-            except Exception as e:
-                logger.error("Ошибка запроса к Gemini (%s): %s", model, e)
-
-    return None
-
-
 async def _call_groq(api_key: str, prompt: str) -> str | None:
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -109,13 +78,15 @@ async def _call_groq(api_key: str, prompt: str) -> str | None:
         "temperature": 0.4,
         "max_tokens": 3000,
     }
-    timeout = aiohttp.ClientTimeout(total=45)
+    timeout = aiohttp.ClientTimeout(total=30)
 
     try:
+        logger.info("Отправляю запрос в Groq (%s)...", GROQ_MODEL)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(GROQ_URL, headers=headers, json=payload) as resp:
                 if resp.status == 200:
                     data = await resp.json()
+                    logger.info("Groq успешно ответил.")
                     return data["choices"][0]["message"]["content"]
                 err = await resp.text()
                 logger.error("Groq API error %s: %s", resp.status, err)
@@ -125,17 +96,49 @@ async def _call_groq(api_key: str, prompt: str) -> str | None:
     return None
 
 
-async def _call_ai(gemini_api_key: str | None, prompt: str) -> str | None:
-    """Сначала пробует Gemini, при перегрузке/ошибке мгновенно переключается на Groq."""
-    if gemini_api_key:
-        text = await _call_gemini(gemini_api_key, prompt)
-        if text:
-            return text
+async def _call_gemini(api_key: str, prompt: str) -> str | None:
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": 4096,
+        },
+    }
+    timeout = aiohttp.ClientTimeout(total=20)
 
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for model in GEMINI_MODELS:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model}:generateContent?key={api_key}"
+            )
+            try:
+                logger.info("Отправляю резервный запрос в Gemini (%s)...", model)
+                async with session.post(url, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        logger.info("Gemini (%s) успешно ответил.", model)
+                        return data["candidates"][0]["content"]["parts"][0]["text"]
+                    err = await resp.text()
+                    logger.error("Gemini %s error %s: %s", model, resp.status, err)
+            except Exception as e:
+                logger.error("Ошибка запроса к Gemini (%s): %s", model, e)
+
+    return None
+
+
+async def _call_ai(gemini_api_key: str | None, prompt: str) -> str | None:
+    """Сначала пробует быстрый Groq, при ошибке переключается на Gemini."""
     groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
     if groq_api_key:
-        logger.info("Переключаюсь на резервный Groq API...")
-        return await _call_groq(groq_api_key, prompt)
+        text = await _call_groq(groq_api_key, prompt)
+        if text:
+            return text
+    else:
+        logger.warning("GROQ_API_KEY не найден в переменных окружения Render!")
+
+    if gemini_api_key:
+        return await _call_gemini(gemini_api_key, prompt)
 
     return None
 
