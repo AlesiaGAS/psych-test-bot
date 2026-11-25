@@ -7,13 +7,17 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
+]
+
 GEMINI_MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-flash-latest",
 ]
-
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.3-70b-versatile"
 
 TEST_NAMES_RU = {
     "MBTI": "MBTI (тип личности)",
@@ -72,26 +76,27 @@ async def _call_groq(api_key: str, prompt: str) -> str | None:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.4,
-        "max_tokens": 3000,
-    }
     timeout = aiohttp.ClientTimeout(total=30)
 
-    try:
-        logger.info("Отправляю запрос в Groq (%s)...", GROQ_MODEL)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(GROQ_URL, headers=headers, json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    logger.info("Groq успешно ответил.")
-                    return data["choices"][0]["message"]["content"]
-                err = await resp.text()
-                logger.error("Groq API error %s: %s", resp.status, err)
-    except Exception as e:
-        logger.error("Ошибка запроса к Groq API: %s", e)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for model in GROQ_MODELS:
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.4,
+                "max_tokens": 3000,
+            }
+            try:
+                logger.info("Отправляю запрос в Groq (%s)...", model)
+                async with session.post(GROQ_URL, headers=headers, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        logger.info("Groq (%s) успешно ответил.", model)
+                        return data["choices"][0]["message"]["content"]
+                    err = await resp.text()
+                    logger.error("Groq %s error %s: %s", model, resp.status, err)
+            except Exception as e:
+                logger.error("Ошибка запроса к Groq (%s): %s", model, e)
 
     return None
 
