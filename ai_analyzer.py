@@ -2,16 +2,20 @@ import asyncio
 import html
 import json
 import logging
+import os
 import re
 import aiohttp
 
 logger = logging.getLogger(__name__)
 
-MODELS = [
+GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-flash-latest",
 ]
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 TEST_NAMES_RU = {
     "MBTI": "MBTI (тип личности)",
@@ -73,36 +77,65 @@ async def _call_gemini(api_key: str, prompt: str) -> str | None:
             "maxOutputTokens": 4096,
         },
     }
-    timeout = aiohttp.ClientTimeout(total=60)
+    timeout = aiohttp.ClientTimeout(total=45)
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        for model in MODELS:
+        for model in GEMINI_MODELS:
             url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{model}:generateContent?key={api_key}"
             )
-            # Делаем до 2 попыток на модель при временной перегрузке (503 / 429)
-            for attempt in range(2):
-                try:
-                    async with session.post(url, json=payload) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            return data["candidates"][0]["content"]["parts"][0]["text"]
-                        err = await resp.text()
-                        logger.error(
-                            "Gemini %s error %s (попытка %s): %s",
-                            model,
-                            resp.status,
-                            attempt + 1,
-                            err,
-                        )
-                        if resp.status in (429, 503) and attempt == 0:
-                            await asyncio.sleep(3)
-                            continue
-                        break
-                except Exception as e:
-                    logger.error("Ошибка запроса к Gemini (%s): %s", model, e)
-                    break
+            try:
+                async with session.post(url, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["candidates"][0]["content"]["parts"][0]["text"]
+                    err = await resp.text()
+                    logger.error("Gemini %s error %s: %s", model, resp.status, err)
+            except Exception as e:
+                logger.error("Ошибка запроса к Gemini (%s): %s", model, e)
+
+    return None
+
+
+async def _call_groq(api_key: str, prompt: str) -> str | None:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.4,
+        "max_tokens": 3000,
+    }
+    timeout = aiohttp.ClientTimeout(total=45)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(GROQ_URL, headers=headers, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["choices"][0]["message"]["content"]
+                err = await resp.text()
+                logger.error("Groq API error %s: %s", resp.status, err)
+    except Exception as e:
+        logger.error("Ошибка запроса к Groq API: %s", e)
+
+    return None
+
+
+async def _call_ai(gemini_api_key: str | None, prompt: str) -> str | None:
+    """Сначала пробует Gemini, при перегрузке/ошибке мгновенно переключается на Groq."""
+    if gemini_api_key:
+        text = await _call_gemini(gemini_api_key, prompt)
+        if text:
+            return text
+
+    groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if groq_api_key:
+        logger.info("Переключаюсь на резервный Groq API...")
+        return await _call_groq(groq_api_key, prompt)
 
     return None
 
@@ -114,9 +147,6 @@ async def generate_mbti_ai_portrait(
     questions: list[dict],
     answers: list[str],
 ) -> str | None:
-    if not api_key:
-        return None
-
     scales_str = ", ".join(
         f"{k}: {v['left']}={v['left_pct']}% / {v['right']}={v['right_pct']}%"
         for k, v in result["scales"].items()
@@ -139,7 +169,7 @@ async def generate_mbti_ai_portrait(
         f"**5. Как управлять и общаться** (3–4 конкретные рекомендации)"
     )
 
-    raw_text = await _call_gemini(api_key, prompt)
+    raw_text = await _call_ai(api_key, prompt)
     return _format_ai_html(raw_text) if raw_text else None
 
 
@@ -150,9 +180,6 @@ async def generate_disc_ai_portrait(
     blocks: list[dict],
     answers: list[dict[str, str]],
 ) -> str | None:
-    if not api_key:
-        return None
-
     scales_str = ", ".join(
         f"{k}: {result['pct'][k]}% (Итог {result['net'][k]:+d}, Наиб +{result['most'][k]}, Наим -{result['least'][k]})"
         for k in ("D", "I", "S", "C")
@@ -175,7 +202,7 @@ async def generate_disc_ai_portrait(
         f"**5. Рекомендации по управлению и постановке задач**"
     )
 
-    raw_text = await _call_gemini(api_key, prompt)
+    raw_text = await _call_ai(api_key, prompt)
     return _format_ai_html(raw_text) if raw_text else None
 
 
@@ -186,9 +213,6 @@ async def generate_leadership_ai_portrait(
     questions: list[dict],
     answers: list[dict],
 ) -> str | None:
-    if not api_key:
-        return None
-
     scales_str = ", ".join(
         f"{s['name']}: {s['pct']}% ({s['level_label']})"
         for s in result["scales"].values()
@@ -209,7 +233,7 @@ async def generate_leadership_ai_portrait(
         f"**4. План развития на ближайшие 3–6 месяцев** (что прокачать перед повышением)"
     )
 
-    raw_text = await _call_gemini(api_key, prompt)
+    raw_text = await _call_ai(api_key, prompt)
     return _format_ai_html(raw_text) if raw_text else None
 
 
@@ -218,7 +242,7 @@ async def generate_dossier_ai_summary(
     full_name: str,
     records: list[dict],
 ) -> str | None:
-    if not api_key or not records:
+    if not records:
         return None
 
     passed_types = [rec["test_type"] for rec in records]
@@ -262,5 +286,5 @@ async def generate_dossier_ai_summary(
         f"**5. Ключ к управлению** (как ставить задачи, мотивировать и давать обратную связь)"
     )
 
-    raw_text = await _call_gemini(api_key, prompt)
+    raw_text = await _call_ai(api_key, prompt)
     return _format_ai_html(raw_text) if raw_text else None
