@@ -50,7 +50,12 @@ async def main() -> None:
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         logging.info("Бот запущен и готов к работе.")
-        await dp.start_polling(bot, admin_ids=config.admin_ids, db=db)
+        await dp.start_polling(
+            bot,
+            admin_ids=config.admin_ids,
+            db=db,
+            gemini_api_key=config.gemini_api_key,
+        )
     finally:
         await db.close()
         await runner.cleanup()
