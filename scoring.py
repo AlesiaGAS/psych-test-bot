@@ -15,12 +15,17 @@ def load_json_data(filename: str) -> dict[str, Any]:
 
 MBTI_DATA: dict[str, Any] = load_json_data("mbti_questions.json")
 DISC_DATA: dict[str, Any] = load_json_data("disc_questions.json")
+LEADERSHIP_DATA: dict[str, Any] = load_json_data("leadership_questions.json")
 
 
 def render_progress_bar(current: int, total: int, length: int = 10) -> str:
     filled = round((current / total) * length)
     return "▓" * filled + "░" * (length - filled)
 
+
+# =====================================================================
+# MBTI
+# =====================================================================
 
 def calculate_mbti(answers: list[str]) -> dict[str, Any]:
     counts = {k: 0 for k in ("E", "I", "S", "N", "T", "F", "J", "P")}
@@ -115,7 +120,7 @@ def format_mbti_admin_report(
     return (
         f"📋 <b>НОВЫЙ ОТЧЁТ: MBTI</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Кандидат / Пользователь:</b> {html.escape(full_name)}\n"
+        f"👤 <b>Кандидат:</b> {html.escape(full_name)}\n"
         f"🔗 <b>Username:</b> {user_tag}\n"
         f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
         f"📅 <b>Дата:</b> {now_str}\n"
@@ -128,6 +133,10 @@ def format_mbti_admin_report(
         f"🗣 <b>Стиль коммуникации и управления:</b>\n{html.escape(profile['communication'])}"
     )
 
+
+# =====================================================================
+# DISC
+# =====================================================================
 
 def calculate_disc(answers: list[dict[str, str]]) -> dict[str, Any]:
     total_blocks = len(DISC_DATA["blocks"])
@@ -221,7 +230,7 @@ def format_disc_admin_report(
     return (
         f"📋 <b>НОВЫЙ ОТЧЁТ: DISC</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Кандидат / Пользователь:</b> {html.escape(full_name)}\n"
+        f"👤 <b>Кандидат:</b> {html.escape(full_name)}\n"
         f"🔗 <b>Username:</b> {user_tag}\n"
         f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
         f"📅 <b>Дата:</b> {now_str}\n"
@@ -232,4 +241,120 @@ def format_disc_admin_report(
         f"💪 <b>Сильные стороны:</b>\n{html.escape(profile['strengths'])}\n\n"
         f"⚠️ <b>Зоны риска:</b>\n{html.escape(profile['risks'])}\n\n"
         f"🗣 <b>Стиль коммуникации и мотивации:</b>\n{html.escape(profile['communication'])}"
+    )
+
+
+# =====================================================================
+# LEADERSHIP (УПРАВЛЕНЧЕСКИЙ ПОТЕНЦИАЛ, SJT)
+# =====================================================================
+
+def _get_level_key(pct: int) -> tuple[str, str]:
+    if pct >= 80:
+        return "expert", "Экспертный"
+    if pct >= 60:
+        return "high", "Высокий"
+    if pct >= 35:
+        return "medium", "Базовый"
+    return "low", "Низкий"
+
+
+def calculate_leadership(answers: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    answers: список словарей {'scale': 'L', 'score': 3, 'opt_idx': 1} длиной 24.
+    """
+    raw_scores = {k: 0 for k in ("L", "U", "C", "A")}
+    max_per_scale = {k: 0 for k in ("L", "U", "C", "A")}
+
+    for q in LEADERSHIP_DATA["questions"]:
+        max_per_scale[q["scale"]] += 3
+
+    for ans in answers:
+        raw_scores[ans["scale"]] += ans["score"]
+
+    scales = {}
+    total_score = 0
+    total_max = 0
+
+    for key in ("L", "U", "C", "A"):
+        score = raw_scores[key]
+        max_s = max_per_scale[key] or 18
+        pct = round((score / max_s) * 100)
+        lvl_key, lvl_label = _get_level_key(pct)
+        meta = LEADERSHIP_DATA["scales"][key]
+
+        total_score += score
+        total_max += max_s
+
+        scales[key] = {
+            "name": meta["name"],
+            "short": meta["short"],
+            "score": score,
+            "max": max_s,
+            "pct": pct,
+            "level_key": lvl_key,
+            "level_label": lvl_label,
+            "desc": meta["levels"][lvl_key],
+        }
+
+    overall_pct = round((total_score / (total_max or 72)) * 100)
+    _, overall_label = _get_level_key(overall_pct)
+
+    return {
+        "overall_pct": overall_pct,
+        "overall_label": overall_label,
+        "code": f"{overall_pct}% ({overall_label})",
+        "scales": scales,
+    }
+
+
+def format_leadership_user_result(result: dict[str, Any]) -> str:
+    """Краткий и позитивный результат для пользователя без зон риска."""
+    scales = result["scales"]
+    ranked = sorted(scales.values(), key=lambda x: x["pct"], reverse=True)
+    top_1, top_2 = ranked[0], ranked[1]
+
+    scale_lines = [
+        f"• <b>{s['name']}:</b> {s['pct']}%"
+        for s in scales.values()
+    ]
+
+    return (
+        f"✅ <b>Тест «Управленческий потенциал» завершён!</b>\n\n"
+        f"<b>Ваши ключевые сильные зоны:</b>\n"
+        f"🌟 {html.escape(top_1['name'])} ({top_1['pct']}%)\n"
+        f"🌟 {html.escape(top_2['name'])} ({top_2['pct']}%)\n\n"
+        f"<b>Общий профиль компетенций:</b>\n"
+        f"{chr(10).join(scale_lines)}\n\n"
+        f"Спасибо за прохождение! Ваши результаты сохранены."
+    )
+
+
+def format_leadership_admin_report(
+    full_name: str,
+    username: str | None,
+    user_id: int,
+    result: dict[str, Any],
+) -> str:
+    now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+    user_tag = f"@{html.escape(username)}" if username else "отсутствует"
+
+    scale_blocks = []
+    for s in result["scales"].values():
+        scale_blocks.append(
+            f"• <b>{html.escape(s['name'])}:</b> {s['pct']}% "
+            f"({s['score']}/{s['max']} — <i>{s['level_label']}</i>)\n"
+            f"  └ {html.escape(s['desc'])}"
+        )
+
+    return (
+        f"📋 <b>НОВЫЙ ОТЧЁТ: УПРАВЛЕНЧЕСКИЙ ПОТЕНЦИАЛ</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>Кандидат:</b> {html.escape(full_name)}\n"
+        f"🔗 <b>Username:</b> {user_tag}\n"
+        f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"📅 <b>Дата:</b> {now_str}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🏆 <b>Общий индекс:</b> <b>{result['overall_pct']}% ({result['overall_label']})</b>\n\n"
+        f"📊 <b>Разбалловка по компетенциям:</b>\n"
+        f"{chr(10).join(scale_blocks)}"
     )
