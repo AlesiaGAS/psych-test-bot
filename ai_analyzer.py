@@ -1,3 +1,4 @@
+import asyncio
 import html
 import json
 import logging
@@ -7,7 +8,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 MODELS = [
-    "gemini-3.0-flash",
+    "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-flash-latest",
 ]
@@ -80,15 +81,28 @@ async def _call_gemini(api_key: str, prompt: str) -> str | None:
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{model}:generateContent?key={api_key}"
             )
-            try:
-                async with session.post(url, json=payload) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data["candidates"][0]["content"]["parts"][0]["text"]
-                    err = await resp.text()
-                    logger.error("Gemini %s error %s: %s", model, resp.status, err)
-            except Exception as e:
-                logger.error("Ошибка запроса к Gemini (%s): %s", model, e)
+            # Делаем до 2 попыток на модель при временной перегрузке (503 / 429)
+            for attempt in range(2):
+                try:
+                    async with session.post(url, json=payload) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            return data["candidates"][0]["content"]["parts"][0]["text"]
+                        err = await resp.text()
+                        logger.error(
+                            "Gemini %s error %s (попытка %s): %s",
+                            model,
+                            resp.status,
+                            attempt + 1,
+                            err,
+                        )
+                        if resp.status in (429, 503) and attempt == 0:
+                            await asyncio.sleep(3)
+                            continue
+                        break
+                except Exception as e:
+                    logger.error("Ошибка запроса к Gemini (%s): %s", model, e)
+                    break
 
     return None
 
