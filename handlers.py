@@ -190,7 +190,7 @@ def format_dossier_card(records: list[dict]) -> str:
     return (
         f"🗂 <b>ДОСЬЕ КАНДИДАТА</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Имя:</b> {full_name}\n"
+        f"👤 <b>ФИО:</b> {full_name}\n"
         f"🔗 <b>Username:</b> {username}\n"
         f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -339,7 +339,7 @@ async def cb_dossier_ai(
 
 
 # =====================================================================
-# ВЫБОР ТЕСТА И ЗАПРОС ИМЕНИ
+# ВЫБОР ТЕСТА И ЗАПРОС ФИО
 # =====================================================================
 
 @router.callback_query(F.data.startswith("select_test:"))
@@ -358,7 +358,8 @@ async def cb_select_test(callback: CallbackQuery, state: FSMContext) -> None:
     await safe_edit_text(
         callback.message,
         f"Вы выбрали тест <b>{names[test_type]}</b>.\n\n"
-        f"✍️ Пожалуйста, введите ваше <b>Имя</b> (или ФИО) ответным сообщением:",
+        f"✍️ Пожалуйста, введите ваши <b>полные ФИО</b> (Фамилия Имя Отчество) ответным сообщением:\n"
+        f"<i>Например: Иванов Иван Иванович</i>",
         reply_markup=cancel_only_kb(),
     )
     await callback.answer()
@@ -366,10 +367,13 @@ async def cb_select_test(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(TestFlow.waiting_for_name)
 async def process_user_name(message: Message, state: FSMContext) -> None:
-    full_name = (message.text or "").strip()
-    if len(full_name) < 2 or len(full_name) > 100:
+    full_name = " ".join((message.text or "").strip().split())
+    parts = full_name.split(" ")
+
+    if len(parts) < 3 or any(len(p) < 2 for p in parts) or len(full_name) > 120:
         await message.answer(
-            "Пожалуйста, введите корректное имя (от 2 до 100 символов).",
+            "⚠️ Пожалуйста, введите <b>полные ФИО</b> — Фамилию, Имя и Отчество через пробел.\n"
+            "<i>Например: Иванов Иван Иванович</i>",
             reply_markup=cancel_only_kb(),
         )
         return
