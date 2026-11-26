@@ -7,16 +7,24 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODELS = [
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "qwen/qwen3.8-27b",
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODELS = [
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "openrouter/free",
 ]
 
 GEMINI_MODELS = [
+    "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
     "gemini-flash-latest",
+]
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODELS = [
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-120b",
 ]
 
 TEST_NAMES_RU = {
@@ -28,11 +36,13 @@ TEST_NAMES_RU = {
 SYSTEM_PROMPT = (
     "Ты — сильный HR-бизнес-партнёр и практик управления с 15-летним опытом в реальном бизнесе. "
     "Пишешь отчёты для руководителя, которому нужно принять конкретное кадровое решение (брать/не брать, повышать/нет, как управлять).\n\n"
-    "ПРАВИЛА СТИЛЯ:\n"
-    "- Пиши живым, ясным, точным русским языком, без канцелярита и воды.\n"
-    "- ЗАПРЕЩЕНЫ шаблонные советы вроде «пройти тренинг по эмоциональному интеллекту», «поработать с коучем», «внедрить Agile-спринты», «матрица RACI» и т.п. "
-    "Давай только конкретные управленческие действия: как именно ставить задачу, что контролировать, как давать обратную связь, какие ситуации станут триггером.\n"
-    "- Опирайся строго на реальные ответы и цифры кандидата.\n\n"
+    "ПРАВИЛА СТИЛЯ И ГРАММАТИКИ:\n"
+    "- Пиши безупречным, живым, точным русским языком, без канцелярита и воды.\n"
+    "- СТРОГО следи за полом кандидата по его ФИО (например, Стрельцова — женский род, «она», «её», «Стрельцовой»; Иванов — мужской род). Никогда не коверкай фамилию и не путай род.\n"
+    "- ЗАПРЕЩЕНО выдумывать имена коллег или несуществующие детали (никаких «согласовать с Александром»).\n"
+    "- СТРОГО сверяй выводы с цифрами шкал: не путай высокие и низкие показатели (например, если D = 83%, это ВЫСОКИЙ D, а не низкий).\n"
+    "- ЗАПРЕЩЕНЫ шаблонные советы вроде «пройти тренинг по эмоциональному интеллекту», «поработать с коучем», «внедрить Agile-спринты», «матрица RACI». "
+    "Давай только конкретные управленческие действия: как именно ставить задачу, что контролировать, как давать обратную связь, какие ситуации станут триггером.\n\n"
     "ПРАВИЛА ФОРМАТИРОВАНИЯ (КРИТИЧНО ДЛЯ TELEGRAM):\n"
     "- НИКАКИХ таблиц (символ | вообще не используй).\n"
     "- НИКАКИХ HTML-тегов (никаких <br>, <b> и т.д.).\n"
@@ -45,8 +55,10 @@ SYSTEM_PROMPT = (
 
 def _format_ai_html(text: str) -> str:
     """Чистит мусор от LLM и безопасно конвертирует в Telegram HTML."""
+    # Убираем блоки <think>...</think>, если модель рассуждений их вернула
+    cleaned = re.sub(r"<think>.*?</think>", "", text.strip(), flags=re.DOTALL | re.IGNORECASE)
     # Убираем случайные <br> и <br/> до экранирования
-    cleaned = re.sub(r"<br\s*/?>", "\n", text.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"<br\s*/?>", "\n", cleaned, flags=re.IGNORECASE)
     # Убираем разделители таблиц вида |---|---|
     cleaned = re.sub(r"^\s*\|?[-:\s|]+\|?\s*$", "", cleaned, flags=re.MULTILINE)
     # Убираем markdown-заголовки ### в начале строк
@@ -101,35 +113,38 @@ def _build_leadership_answers_log(questions: list[dict], answers: list[dict]) ->
     return "\n".join(lines)
 
 
-async def _call_groq(api_key: str, prompt: str) -> str | None:
+async def _call_openrouter(api_key: str, prompt: str) -> str | None:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "X-Title": "HR Psych Test Bot",
     }
-    timeout = aiohttp.ClientTimeout(total=35)
+    timeout = aiohttp.ClientTimeout(total=45)
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        for model in GROQ_MODELS:
+        for model in OPENROUTER_MODELS:
             payload = {
                 "model": model,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
-                "temperature": 0.45,
+                "temperature": 0.4,
                 "max_tokens": 2500,
             }
             try:
-                logger.info("Отправляю запрос в Groq (%s)...", model)
-                async with session.post(GROQ_URL, headers=headers, json=payload) as resp:
+                logger.info("Отправляю запрос в OpenRouter (%s)...", model)
+                async with session.post(OPENROUTER_URL, headers=headers, json=payload) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        logger.info("Groq (%s) успешно ответил.", model)
-                        return data["choices"][0]["message"]["content"]
+                        content = data["choices"][0]["message"].get("content")
+                        if content:
+                            logger.info("OpenRouter (%s) успешно ответил.", model)
+                            return content
                     err = await resp.text()
-                    logger.error("Groq %s error %s: %s", model, resp.status, err)
+                    logger.error("OpenRouter %s error %s: %s", model, resp.status, err)
             except Exception as e:
-                logger.error("Ошибка запроса к Groq (%s): %s", model, e)
+                logger.error("Ошибка запроса к OpenRouter (%s): %s", model, e)
 
     return None
 
@@ -139,7 +154,7 @@ async def _call_gemini(api_key: str, prompt: str) -> str | None:
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.45,
+            "temperature": 0.4,
             "maxOutputTokens": 3000,
         },
     }
@@ -166,18 +181,57 @@ async def _call_gemini(api_key: str, prompt: str) -> str | None:
     return None
 
 
+async def _call_groq(api_key: str, prompt: str) -> str | None:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=30)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for model in GROQ_MODELS:
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.4,
+                "max_tokens": 2500,
+            }
+            try:
+                logger.info("Отправляю резервный запрос в Groq (%s)...", model)
+                async with session.post(GROQ_URL, headers=headers, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        logger.info("Groq (%s) успешно ответил.", model)
+                        return data["choices"][0]["message"]["content"]
+                    err = await resp.text()
+                    logger.error("Groq %s error %s: %s", model, resp.status, err)
+            except Exception as e:
+                logger.error("Ошибка запроса к Groq (%s): %s", model, e)
+
+    return None
+
+
 async def _call_ai(gemini_api_key: str | None, prompt: str) -> str | None:
-    """Сначала пробует быстрый Groq, при ошибке переключается на Gemini."""
-    groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
-    if groq_api_key:
-        text = await _call_groq(groq_api_key, prompt)
+    """Порядок: OpenRouter (free) -> Gemini -> Groq."""
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if openrouter_key:
+        text = await _call_openrouter(openrouter_key, prompt)
         if text:
             return text
     else:
-        logger.warning("GROQ_API_KEY не найден в переменных окружения Render!")
+        logger.warning("OPENROUTER_API_KEY не найден в переменных окружения Render!")
 
     if gemini_api_key:
-        return await _call_gemini(gemini_api_key, prompt)
+        text = await _call_gemini(gemini_api_key, prompt)
+        if text:
+            return text
+
+    groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if groq_api_key:
+        return await _call_groq(groq_api_key, prompt)
 
     return None
 
