@@ -34,7 +34,6 @@ async def start_health_server() -> web.AppRunner:
 
     app = web.Application()
     app.router.add_get("/", health)
-    app.router.add_head("/", health)
 
     runner = web.AppRunner(app)
     await runner.setup()
