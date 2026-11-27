@@ -69,9 +69,18 @@ async def send_long_message(bot: Bot, chat_id: int, text: str) -> None:
             logger.error("Не удалось отправить сообщение в %s: %s", chat_id, e)
 
 
+def hide_user_identifiers(text: str) -> str:
+    lines = [
+        line for line in text.splitlines()
+        if "Username:" not in line and "User ID:" not in line
+    ]
+    return "\n".join(lines)
+
+
 async def send_report_to_admins(bot: Bot, admin_ids: list[int], report_text: str) -> None:
+    clean_text = hide_user_identifiers(report_text)
     for admin_id in admin_ids:
-        await send_long_message(bot, admin_id, report_text)
+        await send_long_message(bot, admin_id, clean_text)
 
 
 def build_mbti_question_text(q_index: int) -> str:
@@ -145,8 +154,6 @@ def build_leadership_question_text(q_index: int) -> str:
 def format_dossier_card(records: list[dict]) -> str:
     latest = max(records, key=lambda r: r["created_at"])
     full_name = html.escape(latest["full_name"])
-    username = f"@{html.escape(latest['username'])}" if latest["username"] else "отсутствует"
-    user_id = latest["user_id"]
 
     by_type = {r["test_type"]: r for r in records}
     sections = []
@@ -191,8 +198,6 @@ def format_dossier_card(records: list[dict]) -> str:
         f"🗂 <b>ДОСЬЕ КАНДИДАТА</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 <b>ФИО:</b> {full_name}\n"
-        f"🔗 <b>Username:</b> {username}\n"
-        f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         + "\n\n".join(sections)
     )
@@ -641,7 +646,6 @@ async def cb_disc_back(callback: CallbackQuery, state: FSMContext) -> None:
             build_disc_block_text(prev_block, "most"),
             reply_markup=disc_block_kb(prev_block, "most"),
         )
-
     await callback.answer()
 
 
